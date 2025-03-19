@@ -1,0 +1,876 @@
+<html>
+  <head>
+    <title>Cloth</title>
+    <style>
+      body {
+        margin: 0;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <script src="js/three.js"></script>
+    <script src="js/dat.gui.min.js"></script>
+    <script>
+      var scene = new THREE.Scene();
+      var camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+
+      var renderer = new THREE.WebGLRenderer();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      var gui;
+      var view_cube = true;
+      var view_sphere = true;
+      var view_cylinder = true;
+
+      // Setup end
+
+      // Initialize some variables:
+      // secsPerFrame corresponds to the time elapsed between two successive frames
+      // uniformParticleMass is nothing but the uniform mass of each and every particle, since the cloth is assumed to be homogeneous
+      // initialPositions is used to compare the rest distance with the current distance when computing the tension force
+      // lastPos is an array of the positions of the particles in the last frame, which are needed for verlet's integration
+
+      var width = 102,
+        height = 20,
+        depth = 40,
+        startingVertex = new THREE.Vector3(-50, 40, 20),
+        secsPerFrame = 0.25,
+        tensionConst = 1,
+        uniformParticleMass = 1,
+        density = 2,
+        xDensity = width * density,
+        yDensity = height * density,
+        initialPositions = new Array(),
+        lastPos = new Array();
+
+      /*
+				makeCloth is a function to construct the cloth by adding vertices and faces to a geometry.
+				Parameters:
+					cloth is the cloth geometry
+			*/
+
+      var makeCloth = function (cloth) {
+        var step = 1 / density,
+          x = startingVertex.getComponent(0),
+          y = startingVertex.getComponent(1),
+          z = startingVertex.getComponent(2);
+
+        // Find new dimensions
+
+        xDensity = width * density;
+        yDensity = height * density;
+
+        // Adding vertices
+
+        for (var k = 0; k < yDensity; ++k) {
+          for (var i = 0; i < xDensity; ++i) {
+            cloth.vertices.push(
+              new THREE.Vector3(x + i * step, y, z - (depth / yDensity) * k)
+            );
+          }
+        }
+
+        // Adding faces
+
+        for (var k = 0; k < yDensity - 1; ++k) {
+          for (var i = 0; i < xDensity - 1; ++i) {
+            cloth.faces.push(
+              new THREE.Face3(
+                i + k * xDensity,
+                i + 1 + k * xDensity,
+                i + (k + 1) * xDensity
+              )
+            );
+            cloth.faces.push(
+              new THREE.Face3(
+                i + (k + 1) * xDensity,
+                i + 1 + (k + 1) * xDensity,
+                i + 1 + k * xDensity
+              )
+            );
+          }
+        }
+
+        // Initiatalize lastPos array with Vector3 objects
+
+        lastPos = new Array();
+
+        for (var i = 0; i < cloth.vertices.length; ++i) {
+          lastPos[i] = new THREE.Vector3(0, 0, 0);
+        }
+
+        // Copy the previous positions before applying any new changes
+
+        for (var i = 0; i < cloth.vertices.length; ++i) {
+          lastPos[i].copy(cloth.vertices[i]);
+        }
+
+        // Initialize initialPositions to be the initial setting of the cloth
+
+        initialPositions = new Array();
+
+        for (var i = 0; i < cloth.vertices.length; ++i) {
+          initialPositions.push(new THREE.Vector3().copy(cloth.vertices[i]));
+        }
+      };
+
+      // Next step is to compute forces on each particle
+      // This assumes that the time elapsed between two successive frames is a constant (secsPerFrame)
+
+      var checkDimension = function (index) {
+        return index >= 0 && index < cloth.geometry.vertices.length;
+      };
+
+      var computeNetForce = function () {
+        // First let's define an array that contains the net force vectors
+
+        var netForces = new Array();
+
+        for (var i = 0; i < cloth.geometry.vertices.length; ++i) {
+          netForces.push(new THREE.Vector3(0, 0, 0));
+        }
+
+        // Apply uniform forces
+
+        // First, apply gravity force on every particle
+
+        for (var i = 0; i < netForces.length; ++i) {
+          netForces[i].add(
+            new THREE.Vector3(0, -9.8, 0).multiplyScalar(uniformParticleMass)
+          );
+        }
+
+        // Let's now apply non-uniform forces
+        // Namely, the springs tensions based on particles' locations
+        // We need to take into account:
+        // relative positions and spring's constant of tension
+        // For each particle we accumulate the forces upon the previous uniform net force
+
+        for (var k = 0; k < yDensity; ++k) {
+          for (var i = 0; i < xDensity; ++i) {
+            var currentParticle = i + k * xDensity;
+
+            if (checkDimension(currentParticle - 1)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle - 1])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle - 1])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + 1)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle + 1])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle + 1])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - xDensity)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle - xDensity])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle - xDensity])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + xDensity)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle + xDensity])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle + xDensity])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - xDensity - 1)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle - xDensity - 1])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle - xDensity - 1])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - xDensity + 1)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle - xDensity + 1])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle - xDensity + 1])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + xDensity - 1)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle + xDensity - 1])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle + xDensity - 1])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + xDensity + 1)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle + xDensity + 1])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle + xDensity + 1])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - 2)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle - 2])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle - 2])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + 2)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle + 2])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle + 2])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - 2 * xDensity)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle - 2 * xDensity])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle - 2 * xDensity])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + 2 * xDensity)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[currentParticle + 2 * xDensity])
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(initialPositions[currentParticle + 2 * xDensity])
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - 2 * xDensity - 2)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(
+                    cloth.geometry.vertices[currentParticle - 2 * xDensity - 2]
+                  )
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(
+                        initialPositions[currentParticle - 2 * xDensity - 2]
+                      )
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle - 2 * xDensity + 2)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(
+                    cloth.geometry.vertices[currentParticle - 2 * xDensity + 2]
+                  )
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(
+                        initialPositions[currentParticle - 2 * xDensity + 2]
+                      )
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + 2 * xDensity - 2)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(
+                    cloth.geometry.vertices[currentParticle + 2 * xDensity - 2]
+                  )
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(
+                        initialPositions[currentParticle + 2 * xDensity - 2]
+                      )
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+
+            if (checkDimension(currentParticle + 2 * xDensity + 2)) {
+              netForces[currentParticle].add(
+                new THREE.Vector3()
+                  .copy(
+                    cloth.geometry.vertices[currentParticle + 2 * xDensity + 2]
+                  )
+                  .sub(cloth.geometry.vertices[currentParticle])
+                  .sub(
+                    new THREE.Vector3()
+                      .copy(
+                        initialPositions[currentParticle + 2 * xDensity + 2]
+                      )
+                      .sub(initialPositions[currentParticle])
+                  )
+                  .multiplyScalar(tensionConst)
+              );
+            }
+          }
+        }
+
+        return netForces;
+      };
+
+      // Then deduce the acceleration from Newtion's first law, and the position from verlet's integration
+
+      var findPositions = function () {
+        // Let's define an array of positions, which initially has the acceleration (per step!) gained by each particle
+        // We compute the new position of each particle and assign these values to the array
+        // We return the array, so that we can completely replace the old positions array with this one inside the animate() looping function
+
+        var netForces = computeNetForce();
+
+        var newPositions = new Array();
+        for (var i = 0; i < cloth.geometry.vertices.length; ++i) {
+          newPositions.push(
+            new THREE.Vector3(0, 0, 0)
+              .add(netForces[i])
+              .divideScalar(uniformParticleMass)
+              .multiplyScalar(secsPerFrame * secsPerFrame)
+          );
+          newPositions[i].sub(lastPos[i]);
+          temp = new THREE.Vector3(0, 0, 0);
+          temp.copy(cloth.geometry.vertices[i]);
+          newPositions[i].add(temp.multiplyScalar(2));
+        }
+
+        return newPositions;
+      };
+
+      // Define cloth
+
+      var clothGeometry, clothMaterial, cloth;
+
+      function init() {
+        clothGeometry = new THREE.Geometry();
+
+        makeCloth(clothGeometry);
+
+        clothMaterial = new THREE.MeshLambertMaterial({
+          color: "white",
+          wireframe: true,
+        });
+
+        cloth = new THREE.Mesh(clothGeometry, clothMaterial);
+
+        scene.add(cloth);
+      }
+
+      init();
+
+      //Define Ground
+      var grWidth = 300,
+        grHeight = 3,
+        grDepth = 200;
+      var grGeometry = new THREE.BoxGeometry(
+        grWidth,
+        grHeight,
+        grDepth,
+        10,
+        10,
+        10
+      );
+      var grcubeMaterial = new THREE.MeshLambertMaterial({ color: 0x910e33 });
+      var gr = new THREE.Mesh(grGeometry, grcubeMaterial);
+      scene.add(gr);
+
+      gr.position.set(-34, -12, 0);
+
+      //define a stepBox
+
+      var stWidth = 100,
+        stHeight = 2,
+        stDepth = 30;
+      var stGeom = new THREE.BoxGeometry(
+        stWidth,
+        stHeight,
+        stDepth,
+        10,
+        10,
+        10
+      );
+      var stMat = new THREE.MeshPhongMaterial({ color: 0x51131a });
+      var stepBox = new THREE.Mesh(stGeom, stMat);
+      scene.add(stepBox);
+      var stCX = -0,
+        stX = stCX - 0.5 * stWidth,
+        stCY = -10,
+        stY = stCY - 0.5 * stHeight,
+        stCZ = 0,
+        stZ = stCZ - 0.5 * stDepth;
+
+      stepBox.position.set(stCX, stCY, stCZ);
+
+      // Define a ball
+
+      var ballX = 0,
+        ballY = 0,
+        ballZ = 0,
+        ballRadius = 14,
+        ballErr = 0.2;
+      var ballGeometry = new THREE.SphereGeometry(ballRadius, 30, 30);
+      var ballMaterial = new THREE.MeshPhongMaterial({ color: 0x3354ff });
+      var ball = new THREE.Mesh(ballGeometry, ballMaterial);
+      scene.add(ball);
+      ball.position.set(ballX, ballY, ballZ);
+
+      var mathBall = new THREE.Sphere(
+        new THREE.Vector3(ballX, ballY, ballZ),
+        ballRadius + ballErr
+      );
+
+      // Define a cube
+
+      var cubeWidth = 20,
+        cubeHeight = 20,
+        cubeDepth = 24;
+      var cubeGeometry = new THREE.BoxGeometry(
+        cubeWidth,
+        cubeHeight,
+        cubeDepth,
+        10,
+        10,
+        10
+      );
+      var cubeMaterial = new THREE.MeshPhongMaterial({ color: 0x20e437 });
+      var cube = new THREE.Mesh(cubeGeometry, cubeMaterial);
+      scene.add(cube);
+      var cubeCX = -34,
+        cubeX = cubeCX - 0.5 * cubeWidth,
+        cubeCY = 0,
+        cubeY = cubeCY - 0.5 * cubeHeight,
+        cubeCZ = 0,
+        cubeZ = cubeCZ - 0.5 * cubeDepth;
+      cube.position.set(cubeCX, cubeCY, cubeCZ);
+
+      // Define a cylinder
+
+      var cylinderX = 34,
+        cylinderY = 0,
+        cylinderZ = 0,
+        cylinderRadius = 10;
+      cylinderHeight = 20;
+      var cylinderGeometry = new THREE.CylinderGeometry(
+        cylinderRadius,
+        cylinderRadius,
+        cylinderHeight,
+        60,
+        60
+      );
+      var cylinderMaterial = new THREE.MeshPhongMaterial({ color: 0xa863e15 });
+      var cylinder = new THREE.Mesh(cylinderGeometry, cylinderMaterial);
+      scene.add(cylinder);
+      cylinder.position.set(cylinderX, cylinderY, cylinderZ);
+
+      // stand a little farther from the origin
+
+      camera.position.y = 60;
+      camera.position.z = 60;
+      camera.lookAt(new THREE.Vector3(0, 0, 0));
+
+      //define lights
+      var ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+      scene.add(ambientLight);
+
+      var light1 = new THREE.PointLight(0xffffff, 3, 50);
+      scene.add(light1);
+
+      var light2 = new THREE.PointLight(0xffff1c, 2, 50);
+      scene.add(light2);
+
+      var light3 = new THREE.PointLight(0xffffff, 2, 50);
+      scene.add(light3);
+
+      var time = 3; //Date.now() * 0.0005;
+      light2.position.x = Math.sin(time * 0.7) * 30;
+      light2.position.y = Math.cos(time * 0.5) * 40;
+      light2.position.z = Math.cos(time * 0.3) * 30;
+
+      light1.position.x = Math.cos(time * 0.7) * 30;
+      light1.position.y = Math.sin(time * 0.5) * 40;
+      light1.position.z = Math.sin(time * 0.3) * 30;
+
+      light3.position.x = Math.sin(time * 0.7) * 30;
+      light3.position.y = Math.cos(time * 0.3) * 40;
+      light3.position.z = Math.sin(time * 0.5) * 30;
+
+      document.onkeydown = checkKey;
+
+      function checkKey(e) {
+        e = e || window.event;
+
+        if (e.keyCode == "38") {
+          // up arrow
+          camera.position.y += 2;
+        } else if (e.keyCode == "40") {
+          // down arrow
+          camera.position.y -= 2;
+        } else if (e.keyCode == "37") {
+          // left arrow
+          camera.position.x -= 2;
+        } else if (e.keyCode == "39") {
+          // right arrow
+          camera.position.x += 2;
+        } else if (e.keyCode == "87") {
+          // w character
+          // move forward
+          camera.position.z -= 2;
+        } else if (e.keyCode == "83") {
+          // s character
+          // move backward
+          camera.position.z += 2;
+        }
+
+        camera.lookAt(new THREE.Vector3(0, 0, 0));
+      }
+
+      var animate = function () {
+        // Copy the previous positions before applying any new changes
+
+        for (var i = 0; i < cloth.geometry.vertices.length; ++i) {
+          lastPos[i].copy(cloth.geometry.vertices[i]);
+        }
+
+        // set positions for frame
+
+        var tNewPos = findPositions();
+
+        for (var i = 0; i < cloth.geometry.vertices.length; ++i) {
+          cloth.geometry.vertices[i].copy(tNewPos[i]);
+        }
+
+        // check for collisions and act accordingly
+
+        for (var i = 0; i < cloth.geometry.vertices.length; ++i) {
+          // if particle inside the ball
+          // stay within the same trajectory defined by the current veolcity vector
+          // but in the opposite direction
+          // and with less magnitude
+          if (view_sphere) {
+            if (mathBall.containsPoint(cloth.geometry.vertices[i])) {
+              var velocity = new THREE.Vector3()
+                .copy(cloth.geometry.vertices[i])
+                .sub(lastPos[i]);
+
+              // handle loss of momentum, assume that the previous momentum is conserved
+
+              velocity.multiplyScalar(-1);
+
+              // apply the collision effect to the collided particle
+
+              cloth.geometry.vertices[i].add(velocity);
+            }
+          }
+
+          // Get particle coordinates
+
+          var x = cloth.geometry.vertices[i].x,
+            y = cloth.geometry.vertices[i].y,
+            z = cloth.geometry.vertices[i].z,
+            heightErr = 0.1;
+
+          //handle step collision
+
+          if (x >= stX && x <= stX + stWidth) {
+            if (y >= stY && y <= stY + stHeight + heightErr) {
+              if (z >= stZ && z <= stZ + stDepth) {
+                var velocity = new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[i])
+                  .sub(lastPos[i]);
+
+                // handle loss of momentum, assume that half the previous momentum is conserved
+
+                velocity.multiplyScalar(-1);
+
+                // apply the collision effect to the collided particle
+
+                cloth.geometry.vertices[i].add(velocity);
+              }
+            }
+          }
+
+          // handle cube collision
+
+          if (view_cube) {
+            if (x >= cubeX && x <= cubeX + cubeWidth) {
+              if (y >= cubeY && y <= cubeY + cubeHeight) {
+                if (z >= cubeZ && z <= cubeZ + cubeDepth) {
+                  var velocity = new THREE.Vector3()
+                    .copy(cloth.geometry.vertices[i])
+                    .sub(lastPos[i]);
+
+                  // handle loss of momentum, assume that half the previous momentum is conserved
+
+                  velocity.multiplyScalar(-1);
+
+                  // apply the collision effect to the collided particle
+
+                  cloth.geometry.vertices[i].add(velocity);
+                }
+              }
+            }
+          }
+
+          // handle cylinder collision
+          if (view_cylinder) {
+            var err = 0.6;
+
+            if (y <= cylinderY + cylinderHeight / 2) {
+              var correspondingPointOnAxis = new THREE.Vector3(
+                cylinderX,
+                y,
+                cylinderZ
+              );
+              if (
+                correspondingPointOnAxis.distanceTo(
+                  cloth.geometry.vertices[i]
+                ) <=
+                cylinderRadius + err
+              ) {
+                var velocity = new THREE.Vector3()
+                  .copy(cloth.geometry.vertices[i])
+                  .sub(lastPos[i]);
+
+                // handle loss of momentum, assume that half the previous momentum is conserved
+
+                velocity.multiplyScalar(-1);
+
+                // apply the collision effect to the collided particle
+
+                cloth.geometry.vertices[i].add(velocity);
+              }
+            }
+          }
+
+          // if we hit the ground, we stop!
+
+          if (y < -10) {
+            var velocity = new THREE.Vector3()
+              .copy(cloth.geometry.vertices[i])
+              .sub(lastPos[i]);
+
+            // handle loss of momentum, assume that half the previous momentum is conserved
+
+            velocity.multiplyScalar(-1);
+
+            // apply the collision effect to the collided particle
+
+            cloth.geometry.vertices[i].add(velocity);
+          }
+        }
+
+        cloth.geometry.verticesNeedUpdate = true;
+      };
+
+      //display gui
+
+      var start = false;
+      function displaygui() {
+        gui = new dat.GUI();
+
+        parameters = {
+          dens: density, // density
+          mass: uniformParticleMass, // uniformParticleMass
+          tens: tensionConst, // tensionConst
+
+          cube: true, //show cube
+          sphere: true, //show sphere
+          cyl: true, //show cylinder
+          Start: function () {
+            start = true;
+          },
+
+          Pause: function () {
+            start = false;
+          },
+
+          Reset: function () {
+            scene.remove(cloth);
+            init();
+            start = false;
+          },
+        };
+
+        var params = gui.addFolder("Parameters");
+        dens_var = params
+          .add(parameters, "dens")
+          .min(1)
+          .max(20)
+          .step(1)
+          .name("Density");
+        mass_var = params
+          .add(parameters, "mass")
+          .min(0.0)
+          .max(20.0)
+          .step(0.1)
+          .name("Mass");
+        tens_var = params
+          .add(parameters, "tens")
+          .min(0.0)
+          .max(20.0)
+          .step(0.1)
+          .name("TensionConst");
+
+        var shapes = gui.addFolder("Shapes");
+        cube_var = shapes.add(parameters, "cube").name("Cube");
+        sphere_var = shapes.add(parameters, "sphere").name("Sphere");
+        cyl_var = shapes.add(parameters, "cyl").name("Cylinder");
+
+        dens_var.onChange(function (jar) {
+          density = jar;
+        });
+
+        mass_var.onChange(function (jar) {
+          uniformParticleMass = jar;
+        });
+
+        tens_var.onChange(function (jar) {
+          tensionConst = jar;
+        });
+
+        cube_var.onChange(function (jar) {
+          view_cube = jar;
+          if (jar) {
+            scene.add(cube);
+          } else {
+            scene.remove(cube);
+          }
+        });
+
+        sphere_var.onChange(function (jar) {
+          view_sphere = jar;
+          if (jar) {
+            scene.add(ball);
+          } else {
+            scene.remove(ball);
+          }
+        });
+
+        cyl_var.onChange(function (jar) {
+          view_cylinder = jar;
+          if (jar) {
+            scene.add(cylinder);
+          } else {
+            scene.remove(cylinder);
+          }
+        });
+
+        var controls = gui.addFolder("Control");
+
+        controls.add(parameters, "Start");
+        controls.add(parameters, "Pause");
+        controls.add(parameters, "Reset");
+
+        gui.open();
+      }
+
+      function render() {
+        requestAnimationFrame(render);
+
+        if (start) {
+          animate();
+        }
+
+        // draw!
+        renderer.render(scene, camera);
+      }
+
+      displaygui();
+      render();
+    </script>
+  </body>
+</html>
